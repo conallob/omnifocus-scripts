@@ -1,0 +1,32 @@
+name: Claude PR Review
+
+# This workflow automatically reviews pull requests for code quality,
+# best practices, and potential issues
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Review this pull request for:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Security concerns
+            - Documentation completeness
+            - Test coverage
+
+            Provide constructive feedback and suggestions for improvement.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-sonnet-4-5-20250929
+            --max-turns 5
