@@ -293,11 +293,95 @@ Then modify `config.json` to use it:
 2. Run with `--dry-run` first to review what will be imported
 3. Import and clear: `python slack_to_omnifocus.py --remove-after-import`
 
+## Testing
+
+### Running Tests
+
+The project includes comprehensive unit tests covering all major functionality.
+
+#### Install Test Dependencies
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Or install manually:
+
+```bash
+pip install pytest pytest-cov pytest-mock
+```
+
+#### Run All Tests
+
+```bash
+# Run all tests with verbose output
+pytest test_slack_to_omnifocus.py -v
+
+# Run with coverage report
+pytest test_slack_to_omnifocus.py --cov=slack_to_omnifocus --cov-report=html
+
+# Run specific test class
+pytest test_slack_to_omnifocus.py::TestSlackAPIInteractions -v
+
+# Run specific test method
+pytest test_slack_to_omnifocus.py::TestSlackAPIInteractions::test_fetch_saved_messages -v
+```
+
+#### Using unittest (No pytest required)
+
+```bash
+python -m unittest test_slack_to_omnifocus.py
+```
+
+### Test Coverage
+
+The test suite covers:
+
+- ✅ **Configuration loading** - Valid/invalid configs, missing tokens
+- ✅ **Slack API interactions** - Fetching messages, files, error handling
+- ✅ **User and channel caching** - Minimize API calls
+- ✅ **OmniFocus integration** - Task creation, AppleScript execution
+- ✅ **Task formatting** - Messages, files, multiline content
+- ✅ **Saved item removal** - Unstarring items after import
+- ✅ **Full sync workflow** - With and without removal
+- ✅ **Error handling** - API failures, subprocess errors
+
+All tests use mocks to avoid requiring actual Slack/OmniFocus access.
+
+### Test Structure
+
+```
+test_slack_to_omnifocus.py
+├── TestConfigLoading         # Configuration file tests
+├── TestSlackAPIInteractions  # Slack API calls
+├── TestOmniFocusIntegration  # OmniFocus task creation
+├── TestTaskFormatting        # Format conversion
+├── TestRemoveSavedItems      # Slack item removal
+├── TestFullSync             # End-to-end workflow
+└── TestCommandLineInterface  # CLI argument parsing
+```
+
+### Writing New Tests
+
+When adding new features:
+
+1. Add test cases to the appropriate test class
+2. Use mocking for external dependencies:
+   ```python
+   @patch('slack_to_omnifocus.WebClient')
+   @patch('slack_to_omnifocus.subprocess.run')
+   def test_new_feature(self, mock_subprocess, mock_webclient):
+       # Test code here
+   ```
+3. Ensure tests are independent and can run in any order
+4. Verify all tests pass before submitting PRs
+
 ## Contributing
 
 Issues and pull requests welcome! Please ensure:
 - Code follows PEP 8 style guidelines
-- Add tests for new features
+- Add tests for new features (see Testing section above)
+- All existing tests pass: `pytest test_slack_to_omnifocus.py`
 - Update documentation
 
 ## License
