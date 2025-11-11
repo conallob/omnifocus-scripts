@@ -1,0 +1,11 @@
+{
+  "slack_token": "xoxp-your-slack-user-token-here",
+  "omnifocus": {
+    "default_project": null,
+    "default_tags": []
+  },
+  "options": {
+    "remove_after_import": false,
+    "add_slack_link": true
+  }
+}
