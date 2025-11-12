@@ -1,0 +1,2 @@
+# Requires Python 3.7+
+slack-sdk>=3.19.0
