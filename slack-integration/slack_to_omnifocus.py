@@ -106,7 +106,7 @@ class SlackToOmniFocus:
             source: Format "keychain:<service>:<account>"
 
         Returns:
-            Token from keychain
+            Token from keychain, or empty string if not found/invalid
         """
         try:
             parts = source.split(':', 2)
@@ -123,6 +123,12 @@ class SlackToOmniFocus:
                 check=True
             )
             token = result.stdout.strip()
+
+            # Validate token is not empty
+            if not token:
+                logger.error(f"Empty token retrieved from keychain service '{service}'")
+                return ''
+
             logger.info(f"Retrieved token from keychain service '{service}'")
             return token
 
@@ -141,7 +147,7 @@ class SlackToOmniFocus:
             source: Format "1password:<vault>/<item>/<field>" or "1password:<reference>"
 
         Returns:
-            Token from 1Password
+            Token from 1Password, or empty string if not found/invalid
         """
         try:
             # Remove "1password:" prefix
@@ -154,7 +160,13 @@ class SlackToOmniFocus:
                 check=True
             )
             token = result.stdout.strip()
-            logger.info(f"Retrieved token from 1Password")
+
+            # Validate token is not empty
+            if not token:
+                logger.error("Empty token retrieved from 1Password")
+                return ''
+
+            logger.info("Retrieved token from 1Password")
             return token
 
         except subprocess.CalledProcessError as e:
