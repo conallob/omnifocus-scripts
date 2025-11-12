@@ -84,8 +84,8 @@ class SlackToOmniFocus:
         # Check for direct token first
         if 'slack_token' in self.config and self.config['slack_token']:
             token = self.config['slack_token']
-            # Skip if it's a placeholder
-            if not token.startswith('xoxp-your-'):
+            # Skip only if it's the exact placeholder from config.example.json
+            if token and token != 'xoxp-your-slack-user-token-here':
                 return token
 
         # Check for token source (keychain or 1password)
@@ -248,6 +248,10 @@ class SlackToOmniFocus:
         """
         Batch fetch user information to populate cache.
 
+        Note: Slack API doesn't provide a true batch endpoint for user info.
+        This method fetches users sequentially but with error isolation to
+        prevent one failure from blocking others.
+
         Args:
             user_ids: Set of user IDs to fetch
         """
@@ -255,6 +259,9 @@ class SlackToOmniFocus:
             return
 
         logger.info(f"Batch fetching information for {len(user_ids)} users...")
+        success_count = 0
+        fail_count = 0
+
         for user_id in user_ids:
             if user_id in self.user_cache or user_id == 'unknown':
                 continue
@@ -264,13 +271,21 @@ class SlackToOmniFocus:
                 user = response['user']
                 name = user.get('real_name') or user.get('name') or user_id
                 self.user_cache[user_id] = name
+                success_count += 1
             except SlackApiError as e:
                 logger.warning(f"Could not fetch user info for {user_id}: {e}")
                 self.user_cache[user_id] = user_id
+                fail_count += 1
+
+        logger.info(f"User fetch complete: {success_count} succeeded, {fail_count} failed")
 
     def _batch_fetch_channels(self, channel_ids: Set[str]) -> None:
         """
         Batch fetch channel information to populate cache.
+
+        Note: Slack API doesn't provide a true batch endpoint for channel info.
+        This method fetches channels sequentially but with error isolation to
+        prevent one failure from blocking others.
 
         Args:
             channel_ids: Set of channel IDs to fetch
@@ -279,6 +294,9 @@ class SlackToOmniFocus:
             return
 
         logger.info(f"Batch fetching information for {len(channel_ids)} channels...")
+        success_count = 0
+        fail_count = 0
+
         for channel_id in channel_ids:
             if channel_id in self.channel_cache or channel_id == 'unknown':
                 continue
@@ -287,9 +305,13 @@ class SlackToOmniFocus:
                 response = self._api_call_with_retry(self.client.conversations_info, channel=channel_id)
                 name = response['channel'].get('name') or channel_id
                 self.channel_cache[channel_id] = f"#{name}"
+                success_count += 1
             except SlackApiError as e:
                 logger.warning(f"Could not fetch channel info for {channel_id}: {e}")
                 self.channel_cache[channel_id] = channel_id
+                fail_count += 1
+
+        logger.info(f"Channel fetch complete: {success_count} succeeded, {fail_count} failed")
 
     def _get_user_name(self, user_id: str) -> str:
         """Get user's display name from user ID."""
@@ -382,13 +404,24 @@ class SlackToOmniFocus:
 
                 if item_type == 'message':
                     message = item.get('message', {})
+                    channel_id = item.get('channel', '')
+
+                    # Permalink is typically not in message object from stars.list
+                    # Try to get from message first (some contexts), then construct from channel/ts
+                    permalink = message.get('permalink', '')
+                    if not permalink and channel_id and message.get('ts'):
+                        # Construct permalink from channel and timestamp
+                        # Format: Remove dot from timestamp and prefix with 'p'
+                        ts_no_dot = message.get('ts', '').replace('.', '')
+                        permalink = f"https://slack.com/archives/{channel_id}/p{ts_no_dot}" if ts_no_dot else ''
+
                     saved_items.append({
                         'type': 'message',
                         'text': message.get('text', ''),
                         'user': self._get_user_name(message.get('user', 'unknown')),
-                        'channel': self._get_channel_name(item.get('channel', 'unknown')),
+                        'channel': self._get_channel_name(channel_id or 'unknown'),
                         'timestamp': message.get('ts', ''),
-                        'permalink': message.get('permalink', ''),
+                        'permalink': permalink,
                         'item': item
                     })
                 elif item_type == 'file':
@@ -534,9 +567,12 @@ class SlackToOmniFocus:
 
         success_count = 0
         fail_count = 0
+        failed_items = []  # Track failed items for detailed reporting
 
         for i, item in enumerate(saved_items, 1):
             task_name, note = self.format_task(item)
+            item_identifier = self._get_item_identifier(item)
+
             logger.info(f"[{i}/{len(saved_items)}] Adding: {task_name[:60]}...")
 
             if self.add_to_omnifocus(task_name, note):
@@ -551,11 +587,43 @@ class SlackToOmniFocus:
                     logger.info(f"  ✓ Added")
             else:
                 fail_count += 1
-                logger.error(f"  ✗ Failed")
+                failed_items.append({
+                    'identifier': item_identifier,
+                    'task_name': task_name[:100],
+                    'type': item.get('type', 'unknown')
+                })
+                logger.error(f"  ✗ Failed to add: {item_identifier}")
 
+        # Summary
         logger.info(f"\n{'='*60}")
         logger.info(f"Import complete: {success_count} succeeded, {fail_count} failed")
+
+        if failed_items:
+            logger.error(f"\nFailed items ({len(failed_items)}):")
+            for idx, failed in enumerate(failed_items, 1):
+                logger.error(f"  {idx}. [{failed['type']}] {failed['task_name']}")
+                logger.error(f"     Identifier: {failed['identifier']}")
+
         logger.info(f"{'='*60}")
+
+    def _get_item_identifier(self, item: Dict[str, Any]) -> str:
+        """
+        Get a human-readable identifier for an item for logging.
+
+        Args:
+            item: Slack item
+
+        Returns:
+            Identifier string (channel + timestamp or file name)
+        """
+        if item.get('type') == 'message':
+            channel = item.get('channel', 'unknown')
+            timestamp = item.get('timestamp', 'unknown')
+            return f"{channel}/{timestamp}"
+        elif item.get('type') == 'file':
+            return item.get('text', 'unknown file')
+        else:
+            return f"{item.get('type', 'unknown')} item"
 
 
 def main():
