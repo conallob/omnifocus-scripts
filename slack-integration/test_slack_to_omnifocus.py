@@ -54,7 +54,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_missing_slack_token(self):
         """Test error handling when Slack token is missing from config."""
-        config_without_token = {'omnifocus': {}}
+        config_without_token = {}
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(config_without_token, f)
@@ -80,14 +80,52 @@ class TestConfigLoading(unittest.TestCase):
             os.unlink(config_path)
 
 
+class TestAppleScriptEscaping(unittest.TestCase):
+    """Test AppleScript string escaping."""
+
+    def test_escape_basic_string(self):
+        """Test escaping a basic string with no special characters."""
+        result = SlackToOmniFocus._escape_applescript_string("Hello World")
+        self.assertEqual(result, "Hello World")
+
+    def test_escape_quotes(self):
+        """Test escaping double quotes."""
+        result = SlackToOmniFocus._escape_applescript_string('He said "Hello"')
+        self.assertEqual(result, 'He said \\"Hello\\"')
+
+    def test_escape_backslashes(self):
+        """Test escaping backslashes."""
+        result = SlackToOmniFocus._escape_applescript_string('Path: C:\\Users\\Test')
+        self.assertEqual(result, 'Path: C:\\\\Users\\\\Test')
+
+    def test_escape_newlines(self):
+        """Test escaping newlines."""
+        result = SlackToOmniFocus._escape_applescript_string('Line 1\nLine 2\nLine 3')
+        self.assertEqual(result, 'Line 1\\nLine 2\\nLine 3')
+
+    def test_escape_carriage_returns(self):
+        """Test escaping carriage returns."""
+        result = SlackToOmniFocus._escape_applescript_string('Text\rMore text')
+        self.assertEqual(result, 'Text\\rMore text')
+
+    def test_escape_tabs(self):
+        """Test escaping tabs."""
+        result = SlackToOmniFocus._escape_applescript_string('Column1\tColumn2')
+        self.assertEqual(result, 'Column1\\tColumn2')
+
+    def test_escape_combined_special_chars(self):
+        """Test escaping multiple special characters together."""
+        result = SlackToOmniFocus._escape_applescript_string('Test "quote"\nNew line\\backslash')
+        self.assertEqual(result, 'Test \\"quote\\"\\nNew line\\\\backslash')
+
+
 class TestSlackAPIInteractions(unittest.TestCase):
     """Test Slack API interactions."""
 
     def setUp(self):
         """Set up test fixtures."""
         self.test_config = {
-            'slack_token': 'xoxp-test-token-123',
-            'omnifocus': {}
+            'slack_token': 'xoxp-test-token-123'
         }
 
         # Create temporary config file
@@ -103,7 +141,7 @@ class TestSlackAPIInteractions(unittest.TestCase):
     @patch('slack_to_omnifocus.WebClient')
     def test_fetch_saved_messages(self, mock_webclient):
         """Test fetching saved messages from Slack."""
-        # Mock Slack API response
+        # Mock Slack API response with pagination metadata
         mock_client = MagicMock()
         mock_response = {
             'items': [
@@ -117,7 +155,8 @@ class TestSlackAPIInteractions(unittest.TestCase):
                         'permalink': 'https://slack.com/archives/C123/p1234567890'
                     }
                 }
-            ]
+            ],
+            'response_metadata': {}  # No next_cursor, so no more pages
         }
         mock_client.stars_list.return_value = mock_response
         mock_client.users_info.return_value = {
@@ -153,7 +192,8 @@ class TestSlackAPIInteractions(unittest.TestCase):
                         'created': '1234567890'
                     }
                 }
-            ]
+            ],
+            'response_metadata': {}  # No pagination
         }
         mock_client.stars_list.return_value = mock_response
         mock_client.users_info.return_value = {
@@ -190,6 +230,52 @@ class TestSlackAPIInteractions(unittest.TestCase):
         self.assertEqual(len(saved_items), 0)
 
     @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.time.sleep')  # Mock sleep to speed up tests
+    def test_pagination(self, mock_sleep, mock_webclient):
+        """Test that pagination works correctly."""
+        mock_client = MagicMock()
+        # First page with cursor
+        mock_response_page1 = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123',
+                    'message': {'text': 'Message 1', 'user': 'U456', 'ts': '123'}
+                }
+            ],
+            'response_metadata': {'next_cursor': 'cursor123'}
+        }
+        # Second page without cursor
+        mock_response_page2 = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123',
+                    'message': {'text': 'Message 2', 'user': 'U456', 'ts': '124'}
+                }
+            ],
+            'response_metadata': {}
+        }
+        mock_client.stars_list.side_effect = [mock_response_page1, mock_response_page2]
+        mock_client.users_info.return_value = {
+            'user': {'real_name': 'Test User', 'name': 'testuser'}
+        }
+        mock_client.conversations_info.return_value = {
+            'channel': {'name': 'general'}
+        }
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        saved_items = integration.fetch_saved_items()
+
+        # Should have called stars_list twice
+        self.assertEqual(mock_client.stars_list.call_count, 2)
+        # Should have fetched both messages
+        self.assertEqual(len(saved_items), 2)
+        self.assertEqual(saved_items[0]['text'], 'Message 1')
+        self.assertEqual(saved_items[1]['text'], 'Message 2')
+
+    @patch('slack_to_omnifocus.WebClient')
     def test_user_name_caching(self, mock_webclient):
         """Test that user names are cached to reduce API calls."""
         mock_client = MagicMock()
@@ -205,7 +291,8 @@ class TestSlackAPIInteractions(unittest.TestCase):
                     'channel': 'C123',
                     'message': {'text': 'Message 2', 'user': 'U456', 'ts': '124'}
                 }
-            ]
+            ],
+            'response_metadata': {}
         }
         mock_client.stars_list.return_value = mock_response
         mock_client.users_info.return_value = {
@@ -232,8 +319,7 @@ class TestOmniFocusIntegration(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.test_config = {
-            'slack_token': 'xoxp-test-token-123',
-            'omnifocus': {}
+            'slack_token': 'xoxp-test-token-123'
         }
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -310,8 +396,7 @@ class TestTaskFormatting(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.test_config = {
-            'slack_token': 'xoxp-test-token-123',
-            'omnifocus': {}
+            'slack_token': 'xoxp-test-token-123'
         }
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -420,8 +505,7 @@ class TestRemoveSavedItems(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.test_config = {
-            'slack_token': 'xoxp-test-token-123',
-            'omnifocus': {}
+            'slack_token': 'xoxp-test-token-123'
         }
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -516,8 +600,7 @@ class TestFullSync(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.test_config = {
-            'slack_token': 'xoxp-test-token-123',
-            'omnifocus': {}
+            'slack_token': 'xoxp-test-token-123'
         }
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -558,7 +641,8 @@ class TestFullSync(unittest.TestCase):
                         'permalink': 'https://slack.com/2'
                     }
                 }
-            ]
+            ],
+            'response_metadata': {}
         }
         mock_client.stars_list.return_value = mock_response
         mock_client.users_info.side_effect = [
@@ -599,7 +683,8 @@ class TestFullSync(unittest.TestCase):
                         'permalink': 'https://slack.com/1'
                     }
                 }
-            ]
+            ],
+            'response_metadata': {}
         }
         mock_client.stars_list.return_value = mock_response
         mock_client.users_info.return_value = {
@@ -624,7 +709,7 @@ class TestFullSync(unittest.TestCase):
     def test_sync_with_no_items(self, mock_webclient):
         """Test sync when there are no saved items."""
         mock_client = MagicMock()
-        mock_response = {'items': []}
+        mock_response = {'items': [], 'response_metadata': {}}
         mock_client.stars_list.return_value = mock_response
         mock_webclient.return_value = mock_client
 

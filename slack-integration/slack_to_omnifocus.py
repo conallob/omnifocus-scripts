@@ -20,8 +20,8 @@ import sys
 import json
 import argparse
 import subprocess
-from datetime import datetime
-from typing import List, Dict, Any, Optional
+import time
+from typing import List, Dict, Any, Optional, Tuple
 
 try:
     from slack_sdk import WebClient
@@ -54,6 +54,28 @@ class SlackToOmniFocus:
         self.user_cache = {}
         self.channel_cache = {}
 
+    @staticmethod
+    def _escape_applescript_string(s: str) -> str:
+        """
+        Escape string for safe use in AppleScript.
+
+        Handles backslashes, quotes, newlines, and carriage returns to prevent
+        AppleScript injection vulnerabilities.
+
+        Args:
+            s: String to escape
+
+        Returns:
+            Safely escaped string
+        """
+        # Order matters: escape backslashes first, then quotes, then newlines
+        s = s.replace('\\', '\\\\')
+        s = s.replace('"', '\\"')
+        s = s.replace('\n', '\\n')
+        s = s.replace('\r', '\\r')
+        s = s.replace('\t', '\\t')
+        return s
+
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from JSON file."""
         if not os.path.exists(config_path):
@@ -76,7 +98,8 @@ class SlackToOmniFocus:
             name = user.get('real_name') or user.get('name') or user_id
             self.user_cache[user_id] = name
             return name
-        except SlackApiError:
+        except SlackApiError as e:
+            print(f"Warning: Could not fetch user info for {user_id}: {e}", file=sys.stderr)
             return user_id
 
     def _get_channel_name(self, channel_id: str) -> str:
@@ -89,12 +112,13 @@ class SlackToOmniFocus:
             name = response['channel'].get('name') or channel_id
             self.channel_cache[channel_id] = f"#{name}"
             return self.channel_cache[channel_id]
-        except SlackApiError:
+        except SlackApiError as e:
+            print(f"Warning: Could not fetch channel info for {channel_id}: {e}", file=sys.stderr)
             return channel_id
 
     def fetch_saved_items(self) -> List[Dict[str, Any]]:
         """
-        Fetch all saved/starred items from Slack.
+        Fetch all saved/starred items from Slack with pagination support.
 
         Returns:
             List of saved items with metadata.
@@ -103,41 +127,57 @@ class SlackToOmniFocus:
         saved_items = []
 
         try:
-            # Fetch starred items (Slack's "saved" items)
-            response = self.client.stars_list()
-            items = response.get('items', [])
+            # Fetch starred items (Slack's "saved" items) with pagination
+            cursor = None
+            page_count = 0
 
-            print(f"Found {len(items)} saved items")
+            while True:
+                page_count += 1
+                # Add small delay between pages to avoid rate limiting
+                if cursor:
+                    time.sleep(0.5)
 
-            for item in items:
-                item_type = item.get('type')
+                response = self.client.stars_list(cursor=cursor, limit=100)
+                items = response.get('items', [])
 
-                if item_type == 'message':
-                    message = item.get('message', {})
-                    saved_items.append({
-                        'type': 'message',
-                        'text': message.get('text', ''),
-                        'user': self._get_user_name(message.get('user', 'unknown')),
-                        'channel': self._get_channel_name(item.get('channel', 'unknown')),
-                        'timestamp': message.get('ts', ''),
-                        'permalink': message.get('permalink', ''),
-                        'item': item
-                    })
-                elif item_type == 'file':
-                    file_data = item.get('file', {})
-                    saved_items.append({
-                        'type': 'file',
-                        'text': file_data.get('title', file_data.get('name', 'Untitled file')),
-                        'url': file_data.get('permalink', ''),
-                        'user': self._get_user_name(file_data.get('user', 'unknown')),
-                        'timestamp': file_data.get('created', ''),
-                        'item': item
-                    })
+                for item in items:
+                    item_type = item.get('type')
 
+                    if item_type == 'message':
+                        message = item.get('message', {})
+                        saved_items.append({
+                            'type': 'message',
+                            'text': message.get('text', ''),
+                            'user': self._get_user_name(message.get('user', 'unknown')),
+                            'channel': self._get_channel_name(item.get('channel', 'unknown')),
+                            'timestamp': message.get('ts', ''),
+                            'permalink': message.get('permalink', ''),
+                            'item': item
+                        })
+                    elif item_type == 'file':
+                        file_data = item.get('file', {})
+                        saved_items.append({
+                            'type': 'file',
+                            'text': file_data.get('title', file_data.get('name', 'Untitled file')),
+                            'url': file_data.get('permalink', ''),
+                            'user': self._get_user_name(file_data.get('user', 'unknown')),
+                            'timestamp': file_data.get('created', ''),
+                            'item': item
+                        })
+
+                # Check for more pages
+                cursor = response.get('response_metadata', {}).get('next_cursor')
+                if not cursor:
+                    break
+
+                print(f"  Fetched page {page_count}, continuing...")
+
+            print(f"Found {len(saved_items)} saved items across {page_count} page(s)")
             return saved_items
 
         except SlackApiError as e:
-            print(f"Error fetching saved items: {e.response['error']}")
+            error_msg = e.response.get('error', 'unknown error') if hasattr(e, 'response') else str(e)
+            print(f"Error fetching saved items: {error_msg}", file=sys.stderr)
             return []
 
     def add_to_omnifocus(self, task_name: str, note: str = "") -> bool:
@@ -151,9 +191,9 @@ class SlackToOmniFocus:
         Returns:
             True if successful, False otherwise
         """
-        # Escape quotes and backslashes for AppleScript
-        task_name = task_name.replace('\\', '\\\\').replace('"', '\\"')
-        note = note.replace('\\', '\\\\').replace('"', '\\"')
+        # Escape strings for safe AppleScript execution
+        task_name = self._escape_applescript_string(task_name)
+        note = self._escape_applescript_string(note)
 
         applescript = f'''
         tell application "OmniFocus"
@@ -172,10 +212,10 @@ class SlackToOmniFocus:
             )
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Error adding task to OmniFocus: {e.stderr}")
+            print(f"Error adding task to OmniFocus: {e.stderr}", file=sys.stderr)
             return False
 
-    def format_task(self, item: Dict[str, Any]) -> tuple:
+    def format_task(self, item: Dict[str, Any]) -> Tuple[str, str]:
         """
         Format a Slack item as an OmniFocus task.
 
@@ -245,7 +285,8 @@ class SlackToOmniFocus:
             return True
 
         except SlackApiError as e:
-            print(f"Error removing saved item: {e.response['error']}")
+            error_msg = e.response.get('error', 'unknown error') if hasattr(e, 'response') else str(e)
+            print(f"Error removing saved item: {error_msg}", file=sys.stderr)
             return False
 
     def sync(self, remove_after_import: bool = False):
