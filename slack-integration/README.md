@@ -73,16 +73,25 @@ Your `config.json` should look like:
 ```json
 {
   "slack_token": "xoxp-your-actual-token-here",
-  "omnifocus": {
-    "default_project": null,
-    "default_tags": []
-  },
+  "slack_token_source": "",
+  "workspace_url": "https://your-workspace.slack.com",
   "options": {
-    "remove_after_import": false,
-    "add_slack_link": true
+    "pagination_delay": 0.5,
+    "batch_fetch_users_channels": true,
+    "max_api_retries": 3
   }
 }
 ```
+
+**Configuration Options:**
+- `slack_token`: Your Slack API token (starts with `xoxp-`). Leave empty if using `slack_token_source`.
+- `slack_token_source`: Alternative credential sources:
+  - macOS Keychain: `"keychain:ServiceName:AccountName"`
+  - 1Password CLI: `"1password:op://vault/item/field"`
+- `workspace_url`: Your Slack workspace URL (e.g., `https://mycompany.slack.com`). Used for constructing message permalinks. Defaults to `https://slack.com` if not provided.
+- `options.pagination_delay`: Seconds to wait between API pagination requests (default: 0.5)
+- `options.batch_fetch_users_channels`: Batch fetch user/channel info to reduce API calls (default: true, recommended)
+- `options.max_api_retries`: Number of retries for rate-limited API calls (default: 3, minimum: 1)
 
 **⚠️ Important:** Never commit `config.json` to version control! It contains sensitive credentials.
 

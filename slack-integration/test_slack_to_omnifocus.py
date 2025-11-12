@@ -829,6 +829,249 @@ class TestRateLimiting(unittest.TestCase):
         mock_sleep.assert_not_called()
 
 
+class TestBatchFetching(unittest.TestCase):
+    """Test batch fetching functionality."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config = {
+            'slack_token': 'xoxp-test-token-123',
+            'options': {
+                'batch_fetch_users_channels': True
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config, f)
+            self.config_path = f.name
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        if os.path.exists(self.config_path):
+            os.unlink(self.config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_batch_fetch_users(self, mock_webclient):
+        """Test batch fetching user information."""
+        mock_client = MagicMock()
+        mock_client.users_info.side_effect = [
+            {'user': {'real_name': 'Alice Smith', 'name': 'alice'}},
+            {'user': {'real_name': 'Bob Jones', 'name': 'bob'}}
+        ]
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        integration._batch_fetch_users({'U001', 'U002'})
+
+        # Should have called users_info twice
+        self.assertEqual(mock_client.users_info.call_count, 2)
+        # Cache should be populated
+        self.assertIn('U001', integration.user_cache)
+        self.assertIn('U002', integration.user_cache)
+        self.assertEqual(integration.user_cache['U001'], 'Alice Smith')
+        self.assertEqual(integration.user_cache['U002'], 'Bob Jones')
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_batch_fetch_channels(self, mock_webclient):
+        """Test batch fetching channel information."""
+        mock_client = MagicMock()
+        mock_client.conversations_info.side_effect = [
+            {'channel': {'name': 'general'}},
+            {'channel': {'name': 'random'}}
+        ]
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        integration._batch_fetch_channels({'C001', 'C002'})
+
+        # Should have called conversations_info twice
+        self.assertEqual(mock_client.conversations_info.call_count, 2)
+        # Cache should be populated with # prefix
+        self.assertIn('C001', integration.channel_cache)
+        self.assertIn('C002', integration.channel_cache)
+        self.assertEqual(integration.channel_cache['C001'], '#general')
+        self.assertEqual(integration.channel_cache['C002'], '#random')
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_batch_fetch_with_errors(self, mock_webclient):
+        """Test batch fetching handles errors gracefully."""
+        from slack_sdk.errors import SlackApiError
+
+        mock_client = MagicMock()
+        # First call succeeds, second fails
+        mock_client.users_info.side_effect = [
+            {'user': {'real_name': 'Alice Smith', 'name': 'alice'}},
+            SlackApiError(message='user_not_found', response={'error': 'user_not_found'})
+        ]
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        integration._batch_fetch_users({'U001', 'U002'})
+
+        # Both IDs should be in cache (failed one uses ID as fallback)
+        self.assertIn('U001', integration.user_cache)
+        self.assertIn('U002', integration.user_cache)
+        self.assertEqual(integration.user_cache['U001'], 'Alice Smith')
+        self.assertEqual(integration.user_cache['U002'], 'U002')  # Fallback to ID
+
+
+class TestPermalinkConstruction(unittest.TestCase):
+    """Test permalink construction with workspace URL."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config_default = {
+            'slack_token': 'xoxp-test-token-123'
+        }
+        self.test_config_custom = {
+            'slack_token': 'xoxp-test-token-123',
+            'workspace_url': 'https://mycompany.slack.com'
+        }
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_permalink_with_default_workspace(self, mock_subprocess, mock_webclient):
+        """Test permalink construction uses default slack.com."""
+        mock_client = MagicMock()
+        mock_response = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123456',
+                    'message': {
+                        'text': 'Test message',
+                        'user': 'U123',
+                        'ts': '1234567890.123456'
+                    }
+                }
+            ],
+            'response_metadata': {}
+        }
+        mock_client.stars_list.return_value = mock_response
+        mock_client.users_info.return_value = {'user': {'real_name': 'Test User', 'name': 'test'}}
+        mock_client.conversations_info.return_value = {'channel': {'name': 'general'}}
+        mock_webclient.return_value = mock_client
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_default, f)
+            config_path = f.name
+
+        try:
+            integration = SlackToOmniFocus(config_path=config_path)
+            items = integration.fetch_saved_items()
+
+            # Permalink should use default slack.com
+            self.assertEqual(len(items), 1)
+            self.assertTrue(items[0]['permalink'].startswith('https://slack.com/archives/'))
+            self.assertIn('C123456', items[0]['permalink'])
+            self.assertIn('p1234567890123456', items[0]['permalink'])
+        finally:
+            os.unlink(config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_permalink_with_custom_workspace(self, mock_subprocess, mock_webclient):
+        """Test permalink construction uses custom workspace URL."""
+        mock_client = MagicMock()
+        mock_response = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123456',
+                    'message': {
+                        'text': 'Test message',
+                        'user': 'U123',
+                        'ts': '1234567890.123456'
+                    }
+                }
+            ],
+            'response_metadata': {}
+        }
+        mock_client.stars_list.return_value = mock_response
+        mock_client.users_info.return_value = {'user': {'real_name': 'Test User', 'name': 'test'}}
+        mock_client.conversations_info.return_value = {'channel': {'name': 'general'}}
+        mock_webclient.return_value = mock_client
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_custom, f)
+            config_path = f.name
+
+        try:
+            integration = SlackToOmniFocus(config_path=config_path)
+            items = integration.fetch_saved_items()
+
+            # Permalink should use custom workspace URL
+            self.assertEqual(len(items), 1)
+            self.assertTrue(items[0]['permalink'].startswith('https://mycompany.slack.com/archives/'))
+        finally:
+            os.unlink(config_path)
+
+
+class TestErrorReporting(unittest.TestCase):
+    """Test detailed error reporting functionality."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config = {
+            'slack_token': 'xoxp-test-token-123'
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config, f)
+            self.config_path = f.name
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        if os.path.exists(self.config_path):
+            os.unlink(self.config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_get_item_identifier_for_message(self, mock_webclient):
+        """Test item identifier generation for messages."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        message_item = {
+            'type': 'message',
+            'channel': '#general',
+            'timestamp': '1234567890.123456'
+        }
+
+        identifier = integration._get_item_identifier(message_item)
+        self.assertEqual(identifier, '#general/1234567890.123456')
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_get_item_identifier_for_file(self, mock_webclient):
+        """Test item identifier generation for files."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        file_item = {
+            'type': 'file',
+            'text': 'document.pdf'
+        }
+
+        identifier = integration._get_item_identifier(file_item)
+        self.assertEqual(identifier, 'document.pdf')
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_missing_scope_error_message(self, mock_webclient):
+        """Test that missing scope errors provide actionable guidance."""
+        from slack_sdk.errors import SlackApiError
+
+        mock_client = MagicMock()
+        mock_error = SlackApiError(
+            message='missing_scope',
+            response={'error': 'missing_scope'}
+        )
+        mock_client.users_info.side_effect = mock_error
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Should handle missing scope error gracefully and return user_id
+        result = integration._get_user_name('U123')
+        self.assertEqual(result, 'U123')
+
+
 class TestRemoveSavedItems(unittest.TestCase):
     """Test removing items from Slack saved items."""
 

@@ -1,6 +1,7 @@
 {
   "slack_token": "xoxp-your-slack-user-token-here",
   "slack_token_source": "",
+  "workspace_url": "https://your-workspace.slack.com",
   "options": {
     "pagination_delay": 0.5,
     "batch_fetch_users_channels": true,
@@ -9,6 +10,7 @@
   "_comments": {
     "slack_token": "Direct Slack API token. Leave empty if using slack_token_source.",
     "slack_token_source": "Alternative credential sources: 'keychain:ServiceName:AccountName' or '1password:op://vault/item/field'",
+    "workspace_url": "Your Slack workspace URL (e.g., https://mycompany.slack.com). Defaults to https://slack.com if not provided.",
     "pagination_delay": "Seconds to wait between pagination requests (helps avoid rate limits)",
     "batch_fetch_users_channels": "Batch fetch user/channel info upfront to reduce API calls (recommended: true)",
     "max_api_retries": "Number of retries for rate-limited API calls"

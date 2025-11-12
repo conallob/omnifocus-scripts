@@ -65,6 +65,11 @@ class SlackToOmniFocus:
         self.batch_fetch = options.get('batch_fetch_users_channels', True)
         self.max_retries = options.get('max_api_retries', 3)
 
+        # Get workspace URL for permalink construction
+        self.workspace_url = self.config.get('workspace_url', 'https://slack.com')
+        # Ensure no trailing slash
+        self.workspace_url = self.workspace_url.rstrip('/')
+
         self.client = WebClient(token=self.slack_token)
         self.user_cache = {}
         self.channel_cache = {}
@@ -255,8 +260,8 @@ class SlackToOmniFocus:
 
             if 'max_api_retries' in options:
                 retries = options['max_api_retries']
-                if not isinstance(retries, int) or retries < 0:
-                    raise ValueError("'max_api_retries' must be a non-negative integer")
+                if not isinstance(retries, int) or retries < 1:
+                    raise ValueError("'max_api_retries' must be a positive integer (at least 1)")
 
     def _api_call_with_retry(self, api_func, **kwargs):
         """
@@ -379,7 +384,13 @@ class SlackToOmniFocus:
             self.user_cache[user_id] = name
             return name
         except SlackApiError as e:
-            logger.warning(f"Could not fetch user info for {user_id}: {e}")
+            error_code = e.response.get('error', '') if e.response else ''
+            if error_code == 'missing_scope':
+                logger.warning(f"Could not fetch user info for {user_id}: Missing 'users:read' scope. Add this scope in your Slack app settings.")
+            elif error_code == 'user_not_found':
+                logger.warning(f"User {user_id} not found (may have been deleted)")
+            else:
+                logger.warning(f"Could not fetch user info for {user_id}: {e}")
             return user_id
 
     def _get_channel_name(self, channel_id: str) -> str:
@@ -393,7 +404,13 @@ class SlackToOmniFocus:
             self.channel_cache[channel_id] = f"#{name}"
             return self.channel_cache[channel_id]
         except SlackApiError as e:
-            logger.warning(f"Could not fetch channel info for {channel_id}: {e}")
+            error_code = e.response.get('error', '') if e.response else ''
+            if error_code == 'missing_scope':
+                logger.warning(f"Could not fetch channel info for {channel_id}: Missing 'channels:read' scope. Add this scope in your Slack app settings.")
+            elif error_code == 'channel_not_found':
+                logger.warning(f"Channel {channel_id} not found (may have been deleted or archived)")
+            else:
+                logger.warning(f"Could not fetch channel info for {channel_id}: {e}")
             return channel_id
 
     def fetch_saved_items(self) -> List[Dict[str, Any]]:
@@ -467,7 +484,7 @@ class SlackToOmniFocus:
                         # Construct permalink from channel and timestamp
                         # Format: Remove dot from timestamp and prefix with 'p'
                         ts_no_dot = message.get('ts', '').replace('.', '')
-                        permalink = f"https://slack.com/archives/{channel_id}/p{ts_no_dot}" if ts_no_dot else ''
+                        permalink = f"{self.workspace_url}/archives/{channel_id}/p{ts_no_dot}" if ts_no_dot else ''
 
                     saved_items.append({
                         'type': 'message',
@@ -493,7 +510,15 @@ class SlackToOmniFocus:
             return saved_items
 
         except SlackApiError as e:
-            logger.error(f"Error fetching saved items: {e}")
+            error_code = e.response.get('error', '') if e.response else ''
+            if error_code == 'invalid_auth':
+                logger.error(f"Error fetching saved items: Invalid Slack token. Please check your token in config.json")
+            elif error_code == 'missing_scope':
+                logger.error(f"Error fetching saved items: Missing 'stars:read' scope. Add this required scope in your Slack app settings.")
+            elif error_code == 'account_inactive':
+                logger.error(f"Error fetching saved items: Slack account is inactive or token has been revoked")
+            else:
+                logger.error(f"Error fetching saved items: {e}")
             return []
 
     def add_to_omnifocus(self, task_name: str, note: str = "") -> bool:
