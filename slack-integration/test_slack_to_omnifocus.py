@@ -118,6 +118,23 @@ class TestAppleScriptEscaping(unittest.TestCase):
         result = SlackToOmniFocus._escape_applescript_string('Test "quote"\nNew line\\backslash')
         self.assertEqual(result, 'Test \\"quote\\"\\nNew line\\\\backslash')
 
+    def test_escape_unicode_characters(self):
+        """Test escaping Unicode characters."""
+        result = SlackToOmniFocus._escape_applescript_string('Unicode: café ñ 中文')
+        # Unicode should pass through unchanged
+        self.assertEqual(result, 'Unicode: café ñ 中文')
+
+    def test_escape_emoji(self):
+        """Test escaping emoji characters."""
+        result = SlackToOmniFocus._escape_applescript_string('Task with emoji 🚀 👍 💯')
+        # Emoji should pass through unchanged
+        self.assertEqual(result, 'Task with emoji 🚀 👍 💯')
+
+    def test_escape_mixed_unicode_and_special_chars(self):
+        """Test escaping mixed Unicode and special characters."""
+        result = SlackToOmniFocus._escape_applescript_string('Message: "café" \n🚀')
+        self.assertEqual(result, 'Message: \\"café\\" \\n🚀')
+
 
 class TestSlackAPIInteractions(unittest.TestCase):
     """Test Slack API interactions."""
@@ -497,6 +514,319 @@ class TestTaskFormatting(unittest.TestCase):
         self.assertIn('Line 1', note)
         self.assertIn('Line 2', note)
         self.assertIn('Line 3', note)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_format_very_long_message(self, mock_webclient):
+        """Test formatting messages longer than 2000 characters in notes."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Create a message with >2000 chars
+        long_text = 'A' * 2500
+        message_item = {
+            'type': 'message',
+            'text': long_text,
+            'user': 'Test User',
+            'channel': '#test',
+            'timestamp': '123',
+            'permalink': 'https://slack.com/test'
+        }
+
+        task_name, note = integration.format_task(message_item)
+
+        # Task name should be truncated
+        self.assertLess(len(task_name), 120)
+        self.assertTrue(task_name.startswith('Slack: A'))
+
+        # Full text should be in note (no truncation in notes)
+        self.assertIn('A' * 100, note)  # Verify a substring exists
+        # Note length should include metadata plus full message
+        self.assertGreater(len(note), 2000)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_format_message_with_unicode_and_emoji(self, mock_webclient):
+        """Test formatting messages with Unicode and emoji characters."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        message_item = {
+            'type': 'message',
+            'text': 'Important task 🚀 café meeting ñoño 中文测试',
+            'user': 'José García',
+            'channel': '#general',
+            'timestamp': '123',
+            'permalink': 'https://slack.com/test'
+        }
+
+        task_name, note = integration.format_task(message_item)
+
+        # Verify Unicode and emoji are preserved
+        self.assertIn('🚀', task_name)
+        self.assertIn('café', task_name)
+        self.assertIn('José García', note)
+        self.assertIn('ñoño', note)
+        self.assertIn('中文测试', note)
+
+
+class TestCredentialManagement(unittest.TestCase):
+    """Test credential retrieval from keychain and 1Password."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config_keychain = {
+            'slack_token': '',
+            'slack_token_source': 'keychain:SlackService:myaccount'
+        }
+        self.test_config_1password = {
+            'slack_token': '',
+            'slack_token_source': '1password:op://Private/Slack/token'
+        }
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_keychain_token_retrieval_success(self, mock_subprocess, mock_webclient):
+        """Test successful token retrieval from macOS Keychain."""
+        # Mock successful keychain retrieval
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = 'xoxp-keychain-token-12345'
+        mock_subprocess.return_value = mock_result
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_keychain, f)
+            config_path = f.name
+
+        try:
+            integration = SlackToOmniFocus(config_path=config_path)
+            self.assertEqual(integration.slack_token, 'xoxp-keychain-token-12345')
+
+            # Verify security command was called correctly
+            call_args = mock_subprocess.call_args[0][0]
+            self.assertIn('security', call_args)
+            self.assertIn('find-generic-password', call_args)
+            self.assertIn('SlackService', call_args)
+            self.assertIn('myaccount', call_args)
+        finally:
+            os.unlink(config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_keychain_token_retrieval_failure(self, mock_subprocess, mock_webclient):
+        """Test handling of keychain retrieval failure."""
+        from subprocess import CalledProcessError
+
+        # Mock failed keychain retrieval
+        mock_subprocess.side_effect = CalledProcessError(
+            returncode=1,
+            cmd=['security'],
+            stderr='Item not found'
+        )
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_keychain, f)
+            config_path = f.name
+
+        try:
+            with self.assertRaises(ValueError) as context:
+                SlackToOmniFocus(config_path=config_path)
+            self.assertIn('keychain', str(context.exception).lower())
+        finally:
+            os.unlink(config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_keychain_empty_token(self, mock_subprocess, mock_webclient):
+        """Test handling of empty token from keychain."""
+        # Mock keychain returning empty string
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ''
+        mock_subprocess.return_value = mock_result
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_keychain, f)
+            config_path = f.name
+
+        try:
+            with self.assertRaises(ValueError) as context:
+                SlackToOmniFocus(config_path=config_path)
+            self.assertIn('token', str(context.exception).lower())
+        finally:
+            os.unlink(config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_1password_token_retrieval_success(self, mock_subprocess, mock_webclient):
+        """Test successful token retrieval from 1Password."""
+        # Mock successful 1Password retrieval
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = 'xoxp-1password-token-67890'
+        mock_subprocess.return_value = mock_result
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_1password, f)
+            config_path = f.name
+
+        try:
+            integration = SlackToOmniFocus(config_path=config_path)
+            self.assertEqual(integration.slack_token, 'xoxp-1password-token-67890')
+
+            # Verify op command was called correctly
+            call_args = mock_subprocess.call_args[0][0]
+            self.assertIn('op', call_args)
+            self.assertIn('read', call_args)
+            self.assertIn('op://Private/Slack/token', call_args)
+        finally:
+            os.unlink(config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_1password_token_retrieval_failure(self, mock_subprocess, mock_webclient):
+        """Test handling of 1Password retrieval failure."""
+        from subprocess import CalledProcessError
+
+        # Mock failed 1Password retrieval
+        mock_subprocess.side_effect = CalledProcessError(
+            returncode=1,
+            cmd=['op'],
+            stderr='Item not found'
+        )
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config_1password, f)
+            config_path = f.name
+
+        try:
+            with self.assertRaises(ValueError) as context:
+                SlackToOmniFocus(config_path=config_path)
+            self.assertIn('1password', str(context.exception).lower())
+        finally:
+            os.unlink(config_path)
+
+
+class TestRateLimiting(unittest.TestCase):
+    """Test rate limiting and retry logic."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config = {
+            'slack_token': 'xoxp-test-token-123',
+            'options': {
+                'max_api_retries': 3
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config, f)
+            self.config_path = f.name
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        if os.path.exists(self.config_path):
+            os.unlink(self.config_path)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.time.sleep')
+    def test_api_call_with_retry_success_first_try(self, mock_sleep, mock_webclient):
+        """Test successful API call on first attempt."""
+        mock_client = MagicMock()
+        mock_response = {'ok': True, 'user': {'name': 'testuser'}}
+        mock_client.users_info.return_value = mock_response
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        result = integration._api_call_with_retry(mock_client.users_info, user='U123')
+
+        self.assertEqual(result, mock_response)
+        mock_client.users_info.assert_called_once_with(user='U123')
+        mock_sleep.assert_not_called()
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.time.sleep')
+    def test_api_call_with_retry_rate_limited(self, mock_sleep, mock_webclient):
+        """Test retry logic when rate limited."""
+        from slack_sdk.errors import SlackApiError
+
+        mock_client = MagicMock()
+
+        # First call: rate limited with Retry-After header
+        rate_limit_response = MagicMock()
+        rate_limit_response.status_code = 429
+        rate_limit_response.headers = {'Retry-After': '2'}
+        rate_limit_error = SlackApiError(
+            message='rate_limited',
+            response=rate_limit_response
+        )
+
+        # Second call: success
+        success_response = {'ok': True, 'user': {'name': 'testuser'}}
+
+        mock_client.users_info.side_effect = [rate_limit_error, success_response]
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+        result = integration._api_call_with_retry(mock_client.users_info, user='U123')
+
+        self.assertEqual(result, success_response)
+        self.assertEqual(mock_client.users_info.call_count, 2)
+        # Should sleep for Retry-After duration
+        mock_sleep.assert_called_once_with(2)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.time.sleep')
+    def test_api_call_with_retry_max_retries_exceeded(self, mock_sleep, mock_webclient):
+        """Test that retry stops after max retries."""
+        from slack_sdk.errors import SlackApiError
+
+        mock_client = MagicMock()
+
+        # Always return rate limit error
+        rate_limit_response = MagicMock()
+        rate_limit_response.status_code = 429
+        rate_limit_response.headers = {'Retry-After': '1'}
+        rate_limit_error = SlackApiError(
+            message='rate_limited',
+            response=rate_limit_response
+        )
+
+        mock_client.users_info.side_effect = rate_limit_error
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Should raise after max retries
+        with self.assertRaises(SlackApiError):
+            integration._api_call_with_retry(mock_client.users_info, user='U123')
+
+        # Should have tried max_api_retries + 1 times (initial + retries)
+        self.assertEqual(mock_client.users_info.call_count, 4)  # 1 + 3 retries
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.time.sleep')
+    def test_api_call_with_retry_non_rate_limit_error(self, mock_sleep, mock_webclient):
+        """Test that non-rate-limit errors are not retried."""
+        from slack_sdk.errors import SlackApiError
+
+        mock_client = MagicMock()
+
+        # Return a non-rate-limit error
+        error_response = {'error': 'invalid_auth'}
+        auth_error = SlackApiError(
+            message='invalid_auth',
+            response=error_response
+        )
+
+        mock_client.users_info.side_effect = auth_error
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Should raise immediately without retry
+        with self.assertRaises(SlackApiError):
+            integration._api_call_with_retry(mock_client.users_info, user='U123')
+
+        # Should only be called once (no retries)
+        mock_client.users_info.assert_called_once()
+        mock_sleep.assert_not_called()
 
 
 class TestRemoveSavedItems(unittest.TestCase):

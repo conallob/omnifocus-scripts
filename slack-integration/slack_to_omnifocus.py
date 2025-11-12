@@ -210,7 +210,53 @@ class SlackToOmniFocus:
             )
 
         with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config = json.load(f)
+
+        # Validate configuration
+        self._validate_config(config)
+        return config
+
+    def _validate_config(self, config: Dict[str, Any]) -> None:
+        """
+        Validate configuration structure and types.
+
+        Args:
+            config: Configuration dictionary to validate
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        # Check that at least one token source is provided
+        has_token = config.get('slack_token')
+        has_source = config.get('slack_token_source')
+
+        if not has_token and not has_source:
+            raise ValueError(
+                "Configuration must include either 'slack_token' or 'slack_token_source'. "
+                "See config.example.json for examples."
+            )
+
+        # Validate options if present
+        if 'options' in config:
+            options = config['options']
+            if not isinstance(options, dict):
+                raise ValueError("'options' must be a dictionary")
+
+            # Validate specific option types
+            if 'pagination_delay' in options:
+                delay = options['pagination_delay']
+                if not isinstance(delay, (int, float)) or delay < 0:
+                    raise ValueError("'pagination_delay' must be a non-negative number")
+
+            if 'batch_fetch_users_channels' in options:
+                batch = options['batch_fetch_users_channels']
+                if not isinstance(batch, bool):
+                    raise ValueError("'batch_fetch_users_channels' must be a boolean")
+
+            if 'max_api_retries' in options:
+                retries = options['max_api_retries']
+                if not isinstance(retries, int) or retries < 0:
+                    raise ValueError("'max_api_retries' must be a non-negative integer")
 
     def _api_call_with_retry(self, api_func, **kwargs):
         """
@@ -244,74 +290,82 @@ class SlackToOmniFocus:
         logger.error(f"Failed after {self.max_retries} retries due to rate limiting")
         raise SlackApiError("Rate limit exceeded", response={'error': 'rate_limited'})
 
+    def _batch_fetch(self, ids: Set[str], cache: Dict[str, str], fetch_func,
+                     extract_name_func, item_type: str) -> None:
+        """
+        Generic batch fetch method to populate cache with API data.
+
+        Note: Slack API doesn't provide true batch endpoints.
+        This method fetches items sequentially but with error isolation to
+        prevent one failure from blocking others.
+
+        Args:
+            ids: Set of IDs to fetch
+            cache: Cache dictionary to populate
+            fetch_func: API function to call for each ID (e.g., self.client.users_info)
+            extract_name_func: Function to extract name from API response
+            item_type: Type of item being fetched (for logging)
+        """
+        if not ids:
+            return
+
+        logger.info(f"Batch fetching information for {len(ids)} {item_type}...")
+        success_count = 0
+        fail_count = 0
+
+        for item_id in ids:
+            if item_id in cache or item_id == 'unknown':
+                continue
+
+            try:
+                response = self._api_call_with_retry(fetch_func, **{item_type[:-1]: item_id})
+                name = extract_name_func(response, item_id)
+                cache[item_id] = name
+                success_count += 1
+            except SlackApiError as e:
+                logger.warning(f"Could not fetch {item_type[:-1]} info for {item_id}: {e}")
+                cache[item_id] = item_id
+                fail_count += 1
+
+        logger.info(f"{item_type.capitalize()} fetch complete: {success_count} succeeded, {fail_count} failed")
+
     def _batch_fetch_users(self, user_ids: Set[str]) -> None:
         """
         Batch fetch user information to populate cache.
 
-        Note: Slack API doesn't provide a true batch endpoint for user info.
-        This method fetches users sequentially but with error isolation to
-        prevent one failure from blocking others.
-
         Args:
             user_ids: Set of user IDs to fetch
         """
-        if not user_ids:
-            return
+        def extract_user_name(response, user_id):
+            user = response['user']
+            return user.get('real_name') or user.get('name') or user_id
 
-        logger.info(f"Batch fetching information for {len(user_ids)} users...")
-        success_count = 0
-        fail_count = 0
-
-        for user_id in user_ids:
-            if user_id in self.user_cache or user_id == 'unknown':
-                continue
-
-            try:
-                response = self._api_call_with_retry(self.client.users_info, user=user_id)
-                user = response['user']
-                name = user.get('real_name') or user.get('name') or user_id
-                self.user_cache[user_id] = name
-                success_count += 1
-            except SlackApiError as e:
-                logger.warning(f"Could not fetch user info for {user_id}: {e}")
-                self.user_cache[user_id] = user_id
-                fail_count += 1
-
-        logger.info(f"User fetch complete: {success_count} succeeded, {fail_count} failed")
+        self._batch_fetch(
+            user_ids,
+            self.user_cache,
+            self.client.users_info,
+            extract_user_name,
+            "users"
+        )
 
     def _batch_fetch_channels(self, channel_ids: Set[str]) -> None:
         """
         Batch fetch channel information to populate cache.
 
-        Note: Slack API doesn't provide a true batch endpoint for channel info.
-        This method fetches channels sequentially but with error isolation to
-        prevent one failure from blocking others.
-
         Args:
             channel_ids: Set of channel IDs to fetch
         """
-        if not channel_ids:
-            return
+        def extract_channel_name(response, channel_id):
+            name = response['channel'].get('name') or channel_id
+            return f"#{name}"
 
-        logger.info(f"Batch fetching information for {len(channel_ids)} channels...")
-        success_count = 0
-        fail_count = 0
-
-        for channel_id in channel_ids:
-            if channel_id in self.channel_cache or channel_id == 'unknown':
-                continue
-
-            try:
-                response = self._api_call_with_retry(self.client.conversations_info, channel=channel_id)
-                name = response['channel'].get('name') or channel_id
-                self.channel_cache[channel_id] = f"#{name}"
-                success_count += 1
-            except SlackApiError as e:
-                logger.warning(f"Could not fetch channel info for {channel_id}: {e}")
-                self.channel_cache[channel_id] = channel_id
-                fail_count += 1
-
-        logger.info(f"Channel fetch complete: {success_count} succeeded, {fail_count} failed")
+        self._batch_fetch(
+            channel_ids,
+            self.channel_cache,
+            self.client.conversations_info,
+            extract_channel_name,
+            "channels"
+        )
 
     def _get_user_name(self, user_id: str) -> str:
         """Get user's display name from user ID."""
@@ -563,17 +617,31 @@ class SlackToOmniFocus:
             logger.info("No saved items to import")
             return
 
-        logger.info(f"\nImporting {len(saved_items)} items to OmniFocus...")
+        total_items = len(saved_items)
+        logger.info(f"\nImporting {total_items} items to OmniFocus...")
 
         success_count = 0
         fail_count = 0
         failed_items = []  # Track failed items for detailed reporting
+        import time
+        start_time = time.time()
 
         for i, item in enumerate(saved_items, 1):
             task_name, note = self.format_task(item)
             item_identifier = self._get_item_identifier(item)
 
-            logger.info(f"[{i}/{len(saved_items)}] Adding: {task_name[:60]}...")
+            # Calculate progress percentage and ETA
+            progress_pct = (i / total_items) * 100
+            if i > 1:
+                elapsed = time.time() - start_time
+                items_per_sec = (i - 1) / elapsed
+                remaining_items = total_items - i + 1
+                eta_seconds = remaining_items / items_per_sec if items_per_sec > 0 else 0
+                eta_str = f", ETA: {int(eta_seconds)}s" if eta_seconds > 5 else ""
+            else:
+                eta_str = ""
+
+            logger.info(f"[{i}/{total_items} - {progress_pct:.1f}%{eta_str}] Adding: {task_name[:60]}...")
 
             if self.add_to_omnifocus(task_name, note):
                 success_count += 1
@@ -594,9 +662,13 @@ class SlackToOmniFocus:
                 })
                 logger.error(f"  ✗ Failed to add: {item_identifier}")
 
+        # Calculate total time
+        total_time = time.time() - start_time
+
         # Summary
         logger.info(f"\n{'='*60}")
         logger.info(f"Import complete: {success_count} succeeded, {fail_count} failed")
+        logger.info(f"Total time: {total_time:.1f}s ({total_items / total_time:.1f} items/sec)")
 
         if failed_items:
             logger.error(f"\nFailed items ({len(failed_items)}):")
