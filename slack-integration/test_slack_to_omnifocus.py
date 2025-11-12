@@ -1295,6 +1295,170 @@ class TestFullSync(unittest.TestCase):
         mock_client.stars_remove.assert_not_called()
 
 
+class TestStateTracking(unittest.TestCase):
+    """Test state file tracking for duplicate detection."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_config = {
+            'slack_token': 'xoxp-test-token-123'
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(self.test_config, f)
+            self.config_path = f.name
+
+        # Create a temporary directory for state file
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        """Clean up test fixtures."""
+        if os.path.exists(self.config_path):
+            os.unlink(self.config_path)
+
+        # Clean up temp directory
+        import shutil
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_load_state_file_not_exists(self, mock_webclient):
+        """Test loading state when file doesn't exist."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # State should be empty
+        self.assertEqual(len(integration.imported_items), 0)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_save_and_load_state(self, mock_webclient):
+        """Test saving and loading state file."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Add some items to state
+        integration.imported_items.add('C123/1234567890.123456')
+        integration.imported_items.add('C456/9876543210.654321')
+
+        # Save state
+        integration._save_state()
+
+        # Create new integration instance and verify state is loaded
+        integration2 = SlackToOmniFocus(config_path=self.config_path)
+        self.assertEqual(len(integration2.imported_items), 2)
+        self.assertIn('C123/1234567890.123456', integration2.imported_items)
+        self.assertIn('C456/9876543210.654321', integration2.imported_items)
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_get_item_key_for_message(self, mock_webclient):
+        """Test generating unique key for message items."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        message_item = {
+            'type': 'message',
+            'channel': 'C123456',
+            'timestamp': '1234567890.123456'
+        }
+
+        key = integration._get_item_key(message_item)
+        self.assertEqual(key, 'C123456/1234567890.123456')
+
+    @patch('slack_to_omnifocus.WebClient')
+    def test_get_item_key_for_file(self, mock_webclient):
+        """Test generating unique key for file items."""
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        file_item = {
+            'type': 'file',
+            'url': 'https://files.slack.com/files/T123/F456/document.pdf',
+            'text': 'document.pdf'
+        }
+
+        key = integration._get_item_key(file_item)
+        self.assertEqual(key, 'https://files.slack.com/files/T123/F456/document.pdf')
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_duplicate_detection_skips_imported(self, mock_subprocess, mock_webclient):
+        """Test that duplicate detection skips already imported items."""
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        mock_client = MagicMock()
+        mock_response = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123',
+                    'message': {
+                        'text': 'Already imported',
+                        'user': 'U123',
+                        'ts': '1111111111.111111'
+                    }
+                },
+                {
+                    'type': 'message',
+                    'channel': 'C123',
+                    'message': {
+                        'text': 'New message',
+                        'user': 'U123',
+                        'ts': '2222222222.222222'
+                    }
+                }
+            ],
+            'response_metadata': {}
+        }
+        mock_client.stars_list.return_value = mock_response
+        mock_client.users_info.return_value = {'user': {'real_name': 'Test User', 'name': 'test'}}
+        mock_client.conversations_info.return_value = {'channel': {'name': 'general'}}
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path)
+
+        # Mark first message as already imported
+        integration.imported_items.add('C123/1111111111.111111')
+
+        # Run sync
+        integration.sync()
+
+        # Only the new message should be added (1 call)
+        self.assertEqual(mock_subprocess.call_count, 1)
+
+    @patch('slack_to_omnifocus.WebClient')
+    @patch('slack_to_omnifocus.subprocess.run')
+    def test_force_reimport_flag(self, mock_subprocess, mock_webclient):
+        """Test that force flag allows re-importing items."""
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        mock_client = MagicMock()
+        mock_response = {
+            'items': [
+                {
+                    'type': 'message',
+                    'channel': 'C123',
+                    'message': {
+                        'text': 'Test message',
+                        'user': 'U123',
+                        'ts': '1111111111.111111'
+                    }
+                }
+            ],
+            'response_metadata': {}
+        }
+        mock_client.stars_list.return_value = mock_response
+        mock_client.users_info.return_value = {'user': {'real_name': 'Test User', 'name': 'test'}}
+        mock_client.conversations_info.return_value = {'channel': {'name': 'general'}}
+        mock_webclient.return_value = mock_client
+
+        integration = SlackToOmniFocus(config_path=self.config_path, force_reimport=True)
+
+        # Mark message as already imported
+        integration.imported_items.add('C123/1111111111.111111')
+
+        # Run sync with force=True
+        integration.sync()
+
+        # Message should be added even though it's in imported items
+        self.assertEqual(mock_subprocess.call_count, 1)
+
+
 class TestCommandLineInterface(unittest.TestCase):
     """Test command-line argument parsing and execution."""
 

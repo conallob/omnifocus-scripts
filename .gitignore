@@ -2,6 +2,9 @@
 config.json
 *.local.json
 
+# State files
+.imported_slack_items.json
+
 # Python
 __pycache__/
 *.py[cod]

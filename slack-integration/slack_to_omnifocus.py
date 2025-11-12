@@ -20,9 +20,8 @@ import sys
 import json
 import argparse
 import subprocess
-import time
 import logging
-from typing import List, Dict, Any, Tuple, Set
+from typing import List, Dict, Any, Tuple, Set, Optional
 
 try:
     from slack_sdk import WebClient
@@ -43,16 +42,29 @@ logger = logging.getLogger(__name__)
 class SlackToOmniFocus:
     """Handles importing Slack saved items to OmniFocus."""
 
-    def __init__(self, config_path: str = None):
+    # Constants for text truncation
+    TASK_NAME_MAX_LENGTH = 100
+    TASK_NAME_DISPLAY_LENGTH = 60
+
+    # Constants for batch fetching
+    BATCH_FETCH_DELAY = 0.15  # Delay between individual API calls in seconds
+
+    # State file for tracking imported items
+    STATE_FILE = '.imported_slack_items.json'
+
+    def __init__(self, config_path: str = None, force_reimport: bool = False):
         """
         Initialize the integration.
 
         Args:
             config_path: Path to configuration file. Defaults to config.json in script directory.
+            force_reimport: If True, re-import items even if already processed. Default: False.
         """
         if config_path is None:
             config_path = os.path.join(os.path.dirname(__file__), 'config.json')
 
+        self.config_dir = os.path.dirname(config_path) or '.'
+        self.force_reimport = force_reimport
         self.config = self._load_config(config_path)
         self.slack_token = self._get_slack_token()
 
@@ -73,6 +85,10 @@ class SlackToOmniFocus:
         self.client = WebClient(token=self.slack_token)
         self.user_cache = {}
         self.channel_cache = {}
+
+        # Load state file for duplicate detection
+        self.state_file_path = os.path.join(self.config_dir, self.STATE_FILE)
+        self.imported_items = self._load_state()
 
     def _get_slack_token(self) -> str:
         """
@@ -263,7 +279,57 @@ class SlackToOmniFocus:
                 if not isinstance(retries, int) or retries < 1:
                     raise ValueError("'max_api_retries' must be a positive integer (at least 1)")
 
-    def _api_call_with_retry(self, api_func, **kwargs):
+    def _load_state(self) -> Set[str]:
+        """
+        Load the state file containing IDs of previously imported items.
+
+        Returns:
+            Set of item keys (channel/timestamp or file ID) that have been imported.
+        """
+        if not os.path.exists(self.state_file_path):
+            return set()
+
+        try:
+            with open(self.state_file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return set(data.get('imported_items', []))
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load state file: {e}. Starting with empty state.")
+            return set()
+
+    def _save_state(self) -> None:
+        """Save the state file with imported item IDs."""
+        try:
+            with open(self.state_file_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'imported_items': list(self.imported_items),
+                    'last_updated': time.strftime('%Y-%m-%d %H:%M:%S')
+                }, f, indent=2)
+        except IOError as e:
+            logger.error(f"Could not save state file: {e}")
+
+    def _get_item_key(self, item: Dict[str, Any]) -> str:
+        """
+        Get a unique key for an item to track if it's been imported.
+
+        Args:
+            item: Saved item dictionary
+
+        Returns:
+            Unique key string (e.g., "C123456/1234567890.123456" for messages)
+        """
+        if item.get('type') == 'message':
+            channel_id = item.get('channel', 'unknown')
+            timestamp = item.get('timestamp', '')
+            return f"{channel_id}/{timestamp}"
+        elif item.get('type') == 'file':
+            # For files, use the URL as unique identifier
+            return item.get('url', item.get('text', 'unknown'))
+        else:
+            # Fallback for unknown types
+            return str(item)
+
+    def _api_call_with_retry(self, api_func, **kwargs) -> Dict[str, Any]:
         """
         Call Slack API with automatic retry on rate limiting.
 
@@ -327,6 +393,9 @@ class SlackToOmniFocus:
                 name = extract_name_func(response, item_id)
                 cache[item_id] = name
                 success_count += 1
+
+                # Small delay to avoid rate limiting during batch operations
+                time.sleep(self.BATCH_FETCH_DELAY)
             except SlackApiError as e:
                 logger.warning(f"Could not fetch {item_type[:-1]} info for {item_id}: {e}")
                 cache[item_id] = item_id
@@ -476,14 +545,20 @@ class SlackToOmniFocus:
                 if item_type == 'message':
                     message = item.get('message', {})
                     channel_id = item.get('channel', '')
+                    timestamp = message.get('ts', '')
+
+                    # Validate timestamp format (should be like "1234567890.123456")
+                    if timestamp and '.' not in timestamp:
+                        logger.warning(f"Unexpected timestamp format: {timestamp} (missing decimal point)")
+                        # Continue processing but note the issue
 
                     # Permalink is typically not in message object from stars.list
                     # Try to get from message first (some contexts), then construct from channel/ts
                     permalink = message.get('permalink', '')
-                    if not permalink and channel_id and message.get('ts'):
+                    if not permalink and channel_id and timestamp:
                         # Construct permalink from channel and timestamp
                         # Format: Remove dot from timestamp and prefix with 'p'
-                        ts_no_dot = message.get('ts', '').replace('.', '')
+                        ts_no_dot = timestamp.replace('.', '')
                         permalink = f"{self.workspace_url}/archives/{channel_id}/p{ts_no_dot}" if ts_no_dot else ''
 
                     saved_items.append({
@@ -491,7 +566,7 @@ class SlackToOmniFocus:
                         'text': message.get('text', ''),
                         'user': self._get_user_name(message.get('user', 'unknown')),
                         'channel': self._get_channel_name(channel_id or 'unknown'),
-                        'timestamp': message.get('ts', ''),
+                        'timestamp': timestamp,
                         'permalink': permalink,
                         'item': item
                     })
@@ -569,7 +644,7 @@ class SlackToOmniFocus:
         if item['type'] == 'message':
             # Create task name from first line or truncated text
             text = item['text'].strip()
-            first_line = text.split('\n')[0][:100]
+            first_line = text.split('\n')[0][:self.TASK_NAME_MAX_LENGTH]
             task_name = f"Slack: {first_line}"
 
             # Create detailed note
@@ -642,18 +717,32 @@ class SlackToOmniFocus:
             logger.info("No saved items to import")
             return
 
+        # Filter out already imported items unless force_reimport is enabled
+        if not self.force_reimport:
+            original_count = len(saved_items)
+            saved_items = [item for item in saved_items if self._get_item_key(item) not in self.imported_items]
+            skipped_count = original_count - len(saved_items)
+
+            if skipped_count > 0:
+                logger.info(f"Skipping {skipped_count} already imported item(s). Use --force to re-import.")
+
+            if not saved_items:
+                logger.info("No new items to import (all items have been imported previously)")
+                return
+
         total_items = len(saved_items)
-        logger.info(f"\nImporting {total_items} items to OmniFocus...")
+        logger.info(f"\nImporting {total_items} item(s) to OmniFocus...")
 
         success_count = 0
         fail_count = 0
+        skipped_removal_count = 0
         failed_items = []  # Track failed items for detailed reporting
-        import time
         start_time = time.time()
 
         for i, item in enumerate(saved_items, 1):
             task_name, note = self.format_task(item)
             item_identifier = self._get_item_identifier(item)
+            item_key = self._get_item_key(item)
 
             # Calculate progress percentage and ETA
             progress_pct = (i / total_items) * 100
@@ -666,23 +755,26 @@ class SlackToOmniFocus:
             else:
                 eta_str = ""
 
-            logger.info(f"[{i}/{total_items} - {progress_pct:.1f}%{eta_str}] Adding: {task_name[:60]}...")
+            logger.info(f"[{i}/{total_items} - {progress_pct:.1f}%{eta_str}] Adding: {task_name[:self.TASK_NAME_DISPLAY_LENGTH]}...")
 
             if self.add_to_omnifocus(task_name, note):
                 success_count += 1
+                # Mark as imported even if removal fails to prevent duplicates
+                self.imported_items.add(item_key)
 
                 if remove_after_import:
                     if self.remove_saved_item(item):
                         logger.info(f"  ✓ Added and removed from Slack")
                     else:
-                        logger.warning(f"  ✓ Added (failed to remove from Slack)")
+                        skipped_removal_count += 1
+                        logger.warning(f"  ✓ Added (failed to remove from Slack - marked as imported to prevent duplicates)")
                 else:
                     logger.info(f"  ✓ Added")
             else:
                 fail_count += 1
                 failed_items.append({
                     'identifier': item_identifier,
-                    'task_name': task_name[:100],
+                    'task_name': task_name[:self.TASK_NAME_MAX_LENGTH],
                     'type': item.get('type', 'unknown')
                 })
                 logger.error(f"  ✗ Failed to add: {item_identifier}")
@@ -690,9 +782,16 @@ class SlackToOmniFocus:
         # Calculate total time
         total_time = time.time() - start_time
 
+        # Save state to prevent duplicates on future runs
+        if success_count > 0:
+            self._save_state()
+            logger.info(f"State file updated: {self.state_file_path}")
+
         # Summary
         logger.info(f"\n{'='*60}")
         logger.info(f"Import complete: {success_count} succeeded, {fail_count} failed")
+        if skipped_removal_count > 0:
+            logger.info(f"Note: {skipped_removal_count} item(s) added but not removed from Slack")
         logger.info(f"Total time: {total_time:.1f}s ({total_items / total_time:.1f} items/sec)")
 
         if failed_items:
@@ -743,11 +842,16 @@ def main():
         action='store_true',
         help='Show what would be imported without actually adding to OmniFocus'
     )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force re-import of items even if they have been imported previously'
+    )
 
     args = parser.parse_args()
 
     try:
-        sync_tool = SlackToOmniFocus(config_path=args.config)
+        sync_tool = SlackToOmniFocus(config_path=args.config, force_reimport=args.force)
 
         if args.dry_run:
             logger.info("DRY RUN MODE - No tasks will be added to OmniFocus\n")
