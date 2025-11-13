@@ -126,6 +126,25 @@ python slack_to_omnifocus.py --remove-after-import
 Use a different configuration file:
 
 ```bash
+Slack to OmniFocus Import
+
+Fetching starred items from Slack...
+  Page 1: 87 items
+  Page 2: 45 items
+Total starred items fetched: 132
+
+Processing 132 items...
+
+[1/132] Slack: Message from John in #general...
+[2/132] Slack: File: Q4-Report.pdf...
+[3/132] Slack: Message from Sarah in #marketing...
+...
+
+Import Statistics
+Items processed:  132
+Tasks created:    132
+API calls made:   265
+Errors:           0
 python slack_to_omnifocus.py --config /path/to/config.json
 ```
 
