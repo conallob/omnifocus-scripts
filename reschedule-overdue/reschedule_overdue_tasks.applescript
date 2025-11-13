@@ -91,15 +91,15 @@ on rescheduleOverdueTasks(projectName, targetDate)
 
 				-- Filter and reschedule overdue tasks
 				repeat with aTask in allTasks
-					set taskDueDate to defer date of aTask
+					set taskDeferDate to defer date of aTask
 					set taskCompleted to completed of aTask
 
-					-- Check if task is overdue (has due date, not completed, due date is before today)
-					if taskDueDate is not missing value and taskCompleted is false then
-						-- Normalize the due date to midnight for comparison
-						set normalizedDueDate to taskDueDate - (time of taskDueDate)
+					-- Check if task is overdue (has defer date, not completed, defer date is before today)
+					if taskDeferDate is not missing value and taskCompleted is false then
+						-- Normalize the defer date to midnight for comparison
+						set normalizedDeferDate to taskDeferDate - (time of taskDeferDate)
 
-						if normalizedDueDate < currentDate then
+						if normalizedDeferDate < currentDate then
 							-- Task is overdue, reschedule it
 							set defer date of aTask to targetDate
 
@@ -229,6 +229,17 @@ on parseDate(dateStr)
 			set yearVal to (item 1 of dateParts) as integer
 			set monthVal to (item 2 of dateParts) as integer
 			set dayVal to (item 3 of dateParts) as integer
+
+			-- Validate date ranges
+			if monthVal < 1 or monthVal > 12 then
+				error "Invalid month. Must be 1-12"
+			end if
+			if dayVal < 1 or dayVal > 31 then
+				error "Invalid day. Must be 1-31"
+			end if
+			if yearVal < 1900 or yearVal > 2100 then
+				error "Invalid year. Must be 1900-2100"
+			end if
 
 			set targetDate to current date
 			set year of targetDate to yearVal

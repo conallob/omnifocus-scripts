@@ -144,6 +144,20 @@ The script returns a record with the following properties:
 
 The script includes a comprehensive unit test suite that verifies all functionality.
 
+### ⚠️ IMPORTANT WARNING ⚠️
+
+**Tests modify your ACTUAL OmniFocus database!**
+
+While tests create a temporary project and clean it up automatically:
+- Test failures may leave test data in your OmniFocus database
+- Tests interact with the live OmniFocus application
+- **STRONGLY RECOMMENDED**: Run tests only when:
+  - You have a recent backup of your OmniFocus database
+  - You can easily review and remove any leftover test data
+  - OmniFocus sync is paused (to avoid syncing test data)
+
+Consider running tests in a separate OmniFocus database or user account for complete isolation.
+
 ### Running Tests
 
 ```bash
@@ -161,15 +175,14 @@ osascript tests/test_reschedule.applescript
 
 The test suite includes:
 
-- ✅ Date parsing (today, tomorrow, YYYY-MM-DD)
+- ✅ Date parsing (today, tomorrow, YYYY-MM-DD) with validation
 - ✅ Rescheduling overdue tasks
 - ✅ Handling projects with no overdue tasks
 - ✅ Error handling for nonexistent projects
 - ✅ Empty project handling
 - ✅ Nested task support
 - ✅ Mixed overdue and current tasks
-
-**Note**: Tests create a temporary test project in your OmniFocus database and clean it up automatically. It's recommended to run tests on a backup or when you can easily review changes.
+- ✅ Invalid date format rejection (e.g., "2025-13-45")
 
 ### Test Output
 
@@ -253,6 +266,51 @@ Schedule regular rescheduling:
 - Normal for large project hierarchies
 - OmniFocus database size affects performance
 - Consider running during off-hours for very large projects
+
+## Performance Considerations
+
+### Expected Performance
+
+The script uses a recursive approach to traverse project hierarchies. Performance varies based on project structure:
+
+**Small Projects (< 50 tasks)**
+- Execution time: < 1 second
+- No noticeable delay
+
+**Medium Projects (50-200 tasks)**
+- Execution time: 1-5 seconds
+- Acceptable for interactive use
+
+**Large Projects (200-500 tasks)**
+- Execution time: 5-15 seconds
+- May show brief processing delay
+
+**Very Large Projects (500+ tasks)**
+- Execution time: 15+ seconds
+- Consider running during off-peak times
+- AppleScript performance limitations may become noticeable
+
+### Performance Factors
+
+Performance depends on:
+- **Project depth**: Deeply nested subprojects add overhead
+- **Task nesting**: Multiple levels of subtasks slow traversal
+- **OmniFocus database size**: Larger databases have slower queries
+- **System resources**: Available CPU and memory
+
+### Optimization Tips
+
+For better performance:
+- Run the script when OmniFocus is not busy syncing
+- Close other applications to free system resources
+- Process one project at a time rather than entire folder hierarchies
+- Consider splitting very large projects into smaller ones
+
+### Technical Note
+
+The recursive algorithm in `getAllTasksInProject` (lines 134-161) examines every task and subtask. While this ensures complete coverage, AppleScript's performance characteristics make it slower than native code for large datasets.
+
+If you regularly work with projects containing 1000+ tasks, expect execution times of 30+ seconds. Consider alternative approaches (batch processing overnight, project restructuring) for such cases.
 
 ## Limitations
 

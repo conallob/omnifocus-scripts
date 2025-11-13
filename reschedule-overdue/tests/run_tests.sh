@@ -31,6 +31,19 @@ echo "==========================================================================
 echo "Reschedule Overdue Tasks - Test Suite"
 echo "================================================================================"
 echo ""
+echo -e "${YELLOW}⚠️  WARNING: Tests will modify your ACTUAL OmniFocus database! ⚠️${NC}"
+echo ""
+echo "While tests create temporary data and clean up automatically:"
+echo "  - Test failures may leave data in your OmniFocus database"
+echo "  - Tests interact with the live OmniFocus application"
+echo ""
+echo "STRONGLY RECOMMENDED:"
+echo "  - Ensure you have a recent backup of your OmniFocus database"
+echo "  - Pause OmniFocus sync to avoid syncing test data"
+echo "  - Be prepared to manually remove test data if cleanup fails"
+echo ""
+read -p "Press ENTER to continue or Ctrl+C to cancel..."
+echo ""
 
 # Check if OmniFocus is running
 if ! pgrep -x "OmniFocus" > /dev/null; then

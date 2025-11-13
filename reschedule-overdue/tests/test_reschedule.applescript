@@ -17,8 +17,21 @@ REQUIREMENTS:
 	- macOS with AppleScript support
 
 NOTES:
-	This test suite creates temporary test data in OmniFocus and cleans it up
-	after testing. It's recommended to run tests on a backup or test database.
+	⚠️  WARNING: This test suite modifies your ACTUAL OmniFocus database!
+
+	While tests create temporary data and clean up automatically:
+	- Test failures may leave test data in your database
+	- Tests interact with the live OmniFocus application
+	- STRONGLY RECOMMENDED: Ensure you have a recent backup
+	- Consider pausing OmniFocus sync to avoid syncing test data
+
+	CODE DUPLICATION:
+	This test file duplicates handler functions from the main script
+	(parseDate, rescheduleOverdueTasks, getAllTasksInProject, getAllSubtasks).
+	This is necessary because AppleScript's load script mechanism is complex
+	and unreliable for testing. While this creates maintenance burden, it
+	ensures tests remain self-contained and reliable. When updating the main
+	script's handlers, remember to update the corresponding handlers here.
 
 AUTHOR: Claude Code
 CREATED: 2025-11-11
@@ -510,6 +523,17 @@ on parseDate(dateStr)
 			set monthVal to (item 2 of dateParts) as integer
 			set dayVal to (item 3 of dateParts) as integer
 
+			-- Validate date ranges
+			if monthVal < 1 or monthVal > 12 then
+				error "Invalid month. Must be 1-12"
+			end if
+			if dayVal < 1 or dayVal > 31 then
+				error "Invalid day. Must be 1-31"
+			end if
+			if yearVal < 1900 or yearVal > 2100 then
+				error "Invalid year. Must be 1900-2100"
+			end if
+
 			set targetDate to current date
 			set year of targetDate to yearVal
 			set month of targetDate to monthVal
@@ -543,13 +567,13 @@ on rescheduleOverdueTasks(projectName, targetDate)
 				set allTasks to my getAllTasksInProject(targetProject)
 
 				repeat with aTask in allTasks
-					set taskDueDate to defer date of aTask
+					set taskDeferDate to defer date of aTask
 					set taskCompleted to completed of aTask
 
-					if taskDueDate is not missing value and taskCompleted is false then
-						set normalizedDueDate to taskDueDate - (time of taskDueDate)
+					if taskDeferDate is not missing value and taskCompleted is false then
+						set normalizedDeferDate to taskDeferDate - (time of taskDeferDate)
 
-						if normalizedDueDate < currentDate then
+						if normalizedDeferDate < currentDate then
 							set defer date of aTask to targetDate
 							set taskCount to taskCount + 1
 							set end of rescheduledTasks to name of aTask
