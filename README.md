@@ -32,9 +32,36 @@ omnifocus-scripts/
 └── README.md             # This file
 ```
 
+## Installation
+
+### Via Homebrew (Recommended for macOS)
+
+```bash
+# Add the tap
+brew tap conallob/tap
+
+# Install omnifocus-scripts
+brew install omnifocus-scripts
+
+# Scripts will be available at:
+# /opt/homebrew/share/omnifocus-scripts (Apple Silicon)
+# /usr/local/share/omnifocus-scripts (Intel)
+```
+
+### Manual Installation
+
+Clone or download this repository and use the scripts directly:
+
+```bash
+git clone https://github.com/conallob/omnifocus-scripts.git
+cd omnifocus-scripts
+```
+
 ## General Usage
 
 Each integration includes its own README with detailed setup and usage instructions. Navigate to the specific integration directory for more information.
+
+After Homebrew installation, scripts are located at `$(brew --prefix)/share/omnifocus-scripts/`
 
 ## Contributing
 
