@@ -23,13 +23,22 @@ See the [Slack Integration README](slack-integration/README.md) for full setup i
 
 ```
 omnifocus-scripts/
-├── slack-integration/     # Slack to OmniFocus sync tool
+├── slack-integration/         # Slack to OmniFocus sync tool
 │   ├── slack_to_omnifocus.py
 │   ├── config.example.json
 │   ├── requirements.txt
 │   └── README.md
-├── CLAUDE.md             # Project guidelines for Claude Code
-└── README.md             # This file
+├── reschedule-overdue/        # Reschedule overdue tasks
+│   ├── reschedule_overdue_tasks.applescript
+│   ├── examples/
+│   └── README.md
+├── .github/
+│   ├── workflows/             # CI/CD workflows
+│   ├── RELEASE.md            # Release process documentation
+│   └── homebrew-formula-template.rb
+├── CLAUDE.md                  # Project guidelines for Claude Code
+├── LICENSE                    # BSD-3-Clause
+└── README.md                  # This file
 ```
 
 ## Installation

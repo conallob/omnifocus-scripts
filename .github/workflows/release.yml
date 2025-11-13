@@ -3,7 +3,9 @@ name: Release and Update Homebrew Formula
 on:
   push:
     tags:
-      - 'v*'
+      # More specific pattern to enforce semantic versioning
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'  # Allow pre-release tags like v1.0.0-beta.1
 
 permissions:
   contents: write
@@ -17,22 +19,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
+            echo "❌ Error: HOMEBREW_TAP_TOKEN secret is not set"
+            echo "Please configure the secret in repository settings:"
+            echo "Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "✅ Required secrets are configured"
+
       - name: Get version from tag
         id: get_version
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "📦 Creating release for version: $VERSION"
 
       - name: Generate release notes
         id: release_notes
         run: |
           cat > release_notes.md << 'EOF'
-          ## OmniFocus Scripts ${{ steps.get_version.outputs.tag }}
+          ## 🎉 OmniFocus Scripts ${{ steps.get_version.outputs.tag }}
 
-          ### Installation
+          ### 📥 Installation
 
-          **Via Homebrew:**
+          **Via Homebrew (Recommended):**
           ```bash
           brew tap conallob/tap
           brew install omnifocus-scripts
@@ -42,18 +55,25 @@ jobs:
           ```bash
           # Download and extract
           curl -L https://github.com/${{ github.repository }}/archive/${{ steps.get_version.outputs.tag }}.tar.gz | tar xz
+          cd omnifocus-scripts-${{ steps.get_version.outputs.version }}
 
           # Copy to desired location
           sudo mkdir -p /opt/homebrew/share/omnifocus-scripts
-          sudo cp -r omnifocus-scripts-${{ steps.get_version.outputs.version }}/* /opt/homebrew/share/omnifocus-scripts/
+          sudo cp -r * /opt/homebrew/share/omnifocus-scripts/
           ```
 
-          ### What's Included
+          ### 📦 What's Included
 
           - **Slack Integration**: Import starred Slack messages into OmniFocus
           - **Reschedule Overdue**: Automatically reschedule overdue tasks
 
+          ### 📖 Documentation
+
           See the [README](https://github.com/${{ github.repository }}/blob/${{ steps.get_version.outputs.tag }}/README.md) for detailed usage instructions.
+
+          ### 📝 Changelog
+
+          <!-- Auto-generated changelog will appear below -->
           EOF
 
       - name: Create GitHub Release
@@ -61,28 +81,72 @@ jobs:
         with:
           body_path: release_notes.md
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.get_version.outputs.version, '-') }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Wait for GitHub to generate release tarball
+        run: |
+          echo "⏳ Waiting for GitHub to generate release archive..."
+          sleep 10
+
       - name: Calculate SHA256 for Homebrew
         id: calculate_sha
         run: |
-          # Download the tarball that GitHub created
-          curl -sL https://github.com/${{ github.repository }}/archive/${{ steps.get_version.outputs.tag }}.tar.gz -o release.tar.gz
+          TARBALL_URL="https://github.com/${{ github.repository }}/archive/${{ steps.get_version.outputs.tag }}.tar.gz"
+          echo "📥 Downloading release tarball with retry logic..."
+
+          # Retry logic with exponential backoff
+          MAX_ATTEMPTS=5
+          ATTEMPT=1
+          DELAY=2
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if curl -fsSL "$TARBALL_URL" -o release.tar.gz; then
+              # Verify the download succeeded and file is not empty
+              if [ -s release.tar.gz ]; then
+                echo "✅ Download successful"
+                break
+              else
+                echo "⚠️  Downloaded file is empty"
+                rm -f release.tar.gz
+              fi
+            else
+              echo "⚠️  Download failed"
+            fi
+
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "❌ Failed to download tarball after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+
+            echo "Waiting ${DELAY}s before retry..."
+            sleep $DELAY
+            DELAY=$((DELAY * 2))
+            ATTEMPT=$((ATTEMPT + 1))
+          done
 
           # Calculate SHA256
           SHA256=$(shasum -a 256 release.tar.gz | awk '{print $1}')
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-          echo "Calculated SHA256: $SHA256"
+          echo "🔐 Calculated SHA256: $SHA256"
 
       - name: Update Homebrew Formula
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          # Clone the homebrew-tap repository
-          git clone https://conallob:${HOMEBREW_TAP_TOKEN}@github.com/conallob/homebrew-tap.git
+          # Use a temporary directory for the tap clone
+          TEMP_DIR=$(mktemp -d)
+          trap "rm -rf $TEMP_DIR" EXIT
+
+          cd "$TEMP_DIR"
+
+          # Clone using gh CLI for secure authentication
+          echo "📥 Cloning homebrew-tap repository..."
+          gh repo clone conallob/homebrew-tap
           cd homebrew-tap
 
           # Configure git
@@ -92,52 +156,34 @@ jobs:
           # Create Formula directory if it doesn't exist
           mkdir -p Formula
 
-          # Create or update the formula
-          cat > Formula/omnifocus-scripts.rb << 'EOF'
-          class OmnifocusScripts < Formula
-            desc "Automation scripts for OmniFocus task management"
-            homepage "https://github.com/conallob/omnifocus-scripts"
-            url "https://github.com/conallob/omnifocus-scripts/archive/${{ steps.get_version.outputs.tag }}.tar.gz"
-            sha256 "${{ steps.calculate_sha.outputs.sha256 }}"
-            version "${{ steps.get_version.outputs.version }}"
-            license "MIT"
+          # Generate formula from template
+          echo "📝 Generating Homebrew formula..."
+          sed -e "s|__VERSION__|${{ steps.get_version.outputs.version }}|g" \
+              -e "s|__TAG__|${{ steps.get_version.outputs.tag }}|g" \
+              -e "s|__SHA256__|${{ steps.calculate_sha.outputs.sha256 }}|g" \
+              "$GITHUB_WORKSPACE/.github/homebrew-formula-template.rb" \
+              > Formula/omnifocus-scripts.rb
 
-            depends_on :macos
+          # Verify the formula was generated correctly
+          if ! grep -q "${{ steps.get_version.outputs.version }}" Formula/omnifocus-scripts.rb; then
+            echo "❌ Formula generation failed - version not found"
+            exit 1
+          fi
 
-            def install
-              # Install all scripts to share directory
-              share.install Dir["*"]
+          # Check if there are actual changes
+          if git diff --quiet Formula/omnifocus-scripts.rb 2>/dev/null; then
+            echo "ℹ️  No changes to formula (version might already exist)"
+          else
+            # Commit and push the formula
+            git add Formula/omnifocus-scripts.rb
+            git commit -m "omnifocus-scripts: update to ${{ steps.get_version.outputs.version }}"
 
-              # Create symlink for easy access
-              (prefix/"omnifocus-scripts").install_symlink share
-            end
+            echo "📤 Pushing formula update..."
+            gh repo set-default conallob/homebrew-tap
+            git push origin main
 
-            def caveats
-              <<~EOS
-                OmniFocus scripts have been installed to:
-                  #{opt_share}
-
-                Available scripts:
-                  • Slack Integration: #{opt_share}/slack-integration/
-                  • Reschedule Overdue: #{opt_share}/reschedule-overdue/
-
-                For detailed usage instructions, see:
-                  #{opt_share}/README.md
-              EOS
-            end
-
-            test do
-              assert_predicate share/"README.md", :exist?
-              assert_predicate share/"slack-integration", :exist?
-              assert_predicate share/"reschedule-overdue", :exist?
-            end
-          end
-          EOF
-
-          # Commit and push the formula
-          git add Formula/omnifocus-scripts.rb
-          git commit -m "omnifocus-scripts: update to ${{ steps.get_version.outputs.version }}"
-          git push origin main
+            echo "✅ Formula updated successfully"
+          fi
 
       - name: Verify Formula Installation
         run: |
@@ -147,3 +193,48 @@ jobs:
           echo "Users can now install with:"
           echo "  brew tap conallob/tap"
           echo "  brew install omnifocus-scripts"
+          echo ""
+          echo "Or upgrade existing installations:"
+          echo "  brew upgrade omnifocus-scripts"
+
+  # Separate job to test the formula
+  test-formula:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Set up Homebrew
+        run: |
+          brew update
+          brew tap conallob/tap
+
+      - name: Wait for tap to update
+        run: |
+          echo "⏳ Waiting for tap to sync..."
+          sleep 30
+
+      - name: Audit formula
+        run: |
+          echo "🔍 Running brew audit..."
+          brew audit --strict conallob/tap/omnifocus-scripts || true
+
+      - name: Test installation
+        run: |
+          echo "🧪 Testing formula installation..."
+          brew install omnifocus-scripts
+          brew test omnifocus-scripts
+
+          # Verify installation location
+          INSTALL_PATH=$(brew --prefix)/share/omnifocus-scripts
+          if [ -d "$INSTALL_PATH" ]; then
+            echo "✅ Scripts installed to: $INSTALL_PATH"
+            ls -la "$INSTALL_PATH"
+          else
+            echo "❌ Installation path not found: $INSTALL_PATH"
+            exit 1
+          fi
+
+      - name: Test uninstallation
+        run: |
+          echo "🧹 Testing uninstallation..."
+          brew uninstall omnifocus-scripts
+          echo "✅ Uninstallation successful"
