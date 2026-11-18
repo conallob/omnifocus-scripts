@@ -4,7 +4,7 @@ This repository uses [Claude Code Action](https://github.com/anthropics/claude-c
 
 ## Workflows
 
-### 1. Claude Assistant (`claude-assistant.yml`)
+### Claude Assistant (`claude-assistant.yml`)
 
 The main interactive assistant that responds to:
 - Issue comments with `@claude` mentions
@@ -18,16 +18,7 @@ The main interactive assistant that responds to:
 - Get help with debugging
 - Discuss architectural decisions
 
-### 2. Claude PR Review (`claude-pr-review.yml`)
-
-Automatically reviews pull requests for:
-- Code quality and best practices
-- Potential bugs or issues
-- Security concerns
-- Documentation completeness
-- Test coverage
-
-This workflow runs automatically when a PR is opened or updated.
+Pull requests are not reviewed automatically. Ask for a review by mentioning `@claude` in a PR comment.
 
 ## Setup Instructions
 
@@ -80,10 +71,6 @@ Mention Claude in any issue or PR comment:
 ```
 @claude please review the error handling in this PR
 ```
-
-### Automatic Reviews
-
-The PR review workflow runs automatically. To customize the review criteria, edit the `prompt` section in `.github/workflows/claude-pr-review.yml`.
 
 ## Advanced Configuration
 
@@ -170,7 +157,6 @@ permissions:
 
 If you hit rate limits, consider:
 - Using `--max-turns` to limit action complexity
-- Implementing branch protections to reduce automated reviews
 - Upgrading your Anthropic API plan
 
 ## Resources
