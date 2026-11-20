@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `reschedule-selection`: reschedule the current OmniFocus selection's due date to today/tomorrow/next-workday, designed for one-keystroke use via a global hotkey
 - GitHub Actions release workflow with Homebrew tap integration
 - Automated Homebrew formula updates on release
 - Comprehensive release documentation

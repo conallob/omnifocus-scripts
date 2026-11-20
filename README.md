@@ -19,6 +19,16 @@ Import your Slack saved messages (starred items) directly into OmniFocus inbox f
 
 See the [Slack Integration README](slack-integration/README.md) for full setup instructions.
 
+### Reschedule Selection
+
+Reschedule whatever task(s) are currently selected in OmniFocus to today,
+tomorrow, or the next working day — built for one-keystroke triage via a
+global hotkey (e.g. a dedicated keyboard layer + skhd).
+
+- 📁 Location: `reschedule-selection/`
+- 📖 Documentation: [reschedule-selection/README.md](reschedule-selection/README.md)
+- 🚀 Quick start: select a task in OmniFocus, run `osascript reschedule_selection.applescript today`
+
 ## Project Structure
 
 ```
@@ -28,9 +38,12 @@ omnifocus-scripts/
 │   ├── config.example.json
 │   ├── requirements.txt
 │   └── README.md
-├── reschedule-overdue/        # Reschedule overdue tasks
+├── reschedule-overdue/        # Reschedule overdue tasks (by project, defer date)
 │   ├── reschedule_overdue_tasks.applescript
 │   ├── examples/
+│   └── README.md
+├── reschedule-selection/      # Reschedule the current selection (due date)
+│   ├── reschedule_selection.applescript
 │   └── README.md
 ├── .github/
 │   ├── workflows/             # CI/CD workflows
